@@ -13,10 +13,13 @@ function getR2Client(acc) {
   const accessKeyId = getEnv("R2_ACCESS_KEY_ID");
   const secretAccessKey = getEnv("R2_SECRET_ACCESS_KEY");
 
-  if (!accountId || !accessKeyId || !secretAccessKey) throw new Error(`Config Error: Acc ${acc}`);
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    throw new Error(`Config Error: Missing credentials for Account ${acc}`);
+  }
 
   const client = new S3Client({
-    region: "auto",
+    // ⚠️ ပြင်ဆင်ချက် (၁) - Node.js မှာ auto အစား us-east-1 သုံးမှ Error ကင်းပါတယ်
+    region: "us-east-1", 
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
   });
@@ -36,28 +39,29 @@ export default async function handler(req, res) {
 
   try {
     const { video, acc = "1" } = req.query;
-    if (!video) return res.status(400).send("Video missing");
 
-    // Get Bucket Name
+    if (!video) return res.status(400).send("Video parameter missing");
+
+    // ⚠️ ပြင်ဆင်ချက် (၂) - ဂဏန်းနာမည်ဖြစ်နေရင် String အဖြစ် အတင်းပြောင်းမယ်
+    const videoString = String(video).trim(); 
+
+    // Bucket Name Check
     const getEnv = (key) => process.env[acc === "1" ? key : `${key}_${acc}`] || process.env[key];
     const bucketName = getEnv("R2_BUCKET_NAME");
 
+    if (!bucketName) throw new Error("Bucket Name Missing in Env Vars");
+
     const r2 = getR2Client(acc);
-
-    // 🔥 အဓိက ပြင်ဆင်ချက် (၁) - URL Decoding
-    // Link မှာ Space တွေကို %20 နဲ့ လာတတ်ပါတယ်။ ဒါကို ပုံမှန်စာသား ပြန်ပြောင်းမှ R2 က ရှာတွေ့ပါမယ်။
-    const objectKey = decodeURIComponent(video);
-
+    const objectKey = decodeURIComponent(videoString);
     const cleanFileName = objectKey.split('/').pop();
     const encodedFileName = encodeURIComponent(cleanFileName);
 
     const bucketParams = {
       Bucket: bucketName,
-      Key: objectKey, // decoded key ကို သုံးမယ်
+      Key: objectKey,
     };
 
-    // 🔥 အဓိက ပြင်ဆင်ချက် (၂) - HEAD Request Handling
-    // Vercel က R2 ကို လှမ်းမေးပြီး APK ကို Size အတိအကျ ပြန်ဖြေပေးမယ်။
+    // HEAD Request (Size Checking)
     if (req.method === 'HEAD') {
       try {
         const headCommand = new HeadObjectCommand(bucketParams);
@@ -70,18 +74,16 @@ export default async function handler(req, res) {
         res.setHeader("Content-Disposition", `attachment; filename="${cleanFileName}"; filename*=UTF-8''${encodedFileName}`);
         res.setHeader("Accept-Ranges", "bytes");
         
-        return res.status(200).end(); // 200 OK နဲ့ Size ကို ပြန်ပို့မယ်
+        return res.status(200).end();
       } catch (error) {
-        console.error("HEAD Error:", error);
-        // တကယ်လို့ Vercel က ရှာမတွေ့ခဲ့ရင်တောင် (404 မပြဘဲ)
-        // နောက်ဆုံးနည်းလမ်းအနေနဲ့ R2 ကို Redirect လုပ်ပေးလိုက်မယ် (Fallback)
-        // ဒါဆို APK က ဒေါင်းလို့ရနိုင်သေးတယ်
+        // Fallback: 404 မပြခင် Redirect စမ်းကြည့်မယ်
         try {
              const command = new GetObjectCommand(bucketParams);
              const signedUrl = await getSignedUrl(r2, command, { expiresIn: LINK_DURATION });
              res.redirect(302, signedUrl);
              return;
         } catch (e) {
+             console.error("HEAD Fallback Error:", e);
              return res.status(404).end();
         }
       }
@@ -98,7 +100,12 @@ export default async function handler(req, res) {
     res.redirect(302, signedUrl);
 
   } catch (error) {
-    console.error("Handler Error:", error);
-    res.status(500).send("Server Error");
+    // ⚠️ ပြင်ဆင်ချက် (၃) - Server Error တက်ရင် ဘာကြောင့်လဲဆိုတာ မြင်ရအောင် ထုတ်ပြမယ်
+    console.error("Handler Fatal Error:", error);
+    res.status(500).json({ 
+        error: "Server Error", 
+        details: error.message,
+        hint: "Check Vercel Logs for full stack trace" 
+    });
   }
 }
