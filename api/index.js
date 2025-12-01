@@ -8,17 +8,18 @@ const LINK_DURATION = 14400; // 4 Hours
 function getR2Client(acc) {
   if (clients.has(acc)) return clients.get(acc);
 
-  const getEnv = (key) => process.env[acc === "1" ? key : `${key}_${acc}`] || process.env[key];
+  // ⚠️ ပြင်ဆင်ချက် (၁) - _1 ပါတဲ့ Env တွေကိုပါ ရှာပေးမယ့် Function
+  const getEnv = (key) => process.env[`${key}_${acc}`] || process.env[key];
+
   const accountId = getEnv("R2_ACCOUNT_ID");
   const accessKeyId = getEnv("R2_ACCESS_KEY_ID");
   const secretAccessKey = getEnv("R2_SECRET_ACCESS_KEY");
 
   if (!accountId || !accessKeyId || !secretAccessKey) {
-    throw new Error(`Config Error: Missing credentials for Account ${acc}`);
+    throw new Error(`Config Error: Missing credentials for Account ${acc} (Check R2_ACCOUNT_ID_${acc} etc.)`);
   }
 
   const client = new S3Client({
-    // ⚠️ ပြင်ဆင်ချက် (၁) - Node.js မှာ auto အစား us-east-1 သုံးမှ Error ကင်းပါတယ်
     region: "us-east-1", 
     endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId, secretAccessKey },
@@ -42,14 +43,13 @@ export default async function handler(req, res) {
 
     if (!video) return res.status(400).send("Video parameter missing");
 
-    // ⚠️ ပြင်ဆင်ချက် (၂) - ဂဏန်းနာမည်ဖြစ်နေရင် String အဖြစ် အတင်းပြောင်းမယ်
     const videoString = String(video).trim(); 
 
-    // Bucket Name Check
-    const getEnv = (key) => process.env[acc === "1" ? key : `${key}_${acc}`] || process.env[key];
+    // ⚠️ ပြင်ဆင်ချက် (၂) - Bucket Name ကိုလည်း _1 နဲ့ ရှာမယ်
+    const getEnv = (key) => process.env[`${key}_${acc}`] || process.env[key];
     const bucketName = getEnv("R2_BUCKET_NAME");
 
-    if (!bucketName) throw new Error("Bucket Name Missing in Env Vars");
+    if (!bucketName) throw new Error(`Bucket Name Missing (Check R2_BUCKET_NAME_${acc})`);
 
     const r2 = getR2Client(acc);
     const objectKey = decodeURIComponent(videoString);
@@ -76,7 +76,7 @@ export default async function handler(req, res) {
         
         return res.status(200).end();
       } catch (error) {
-        // Fallback: 404 မပြခင် Redirect စမ်းကြည့်မယ်
+        // Fallback
         try {
              const command = new GetObjectCommand(bucketParams);
              const signedUrl = await getSignedUrl(r2, command, { expiresIn: LINK_DURATION });
@@ -100,7 +100,6 @@ export default async function handler(req, res) {
     res.redirect(302, signedUrl);
 
   } catch (error) {
-    // ⚠️ ပြင်ဆင်ချက် (၃) - Server Error တက်ရင် ဘာကြောင့်လဲဆိုတာ မြင်ရအောင် ထုတ်ပြမယ်
     console.error("Handler Fatal Error:", error);
     res.status(500).json({ 
         error: "Server Error", 
