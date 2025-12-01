@@ -1,49 +1,67 @@
-        accessKeyId: accessKeyId,
-        secretAccessKey: secretAccessKey,
-      },
+// api/index.js
+import { S3Client, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+export default async function handler(req, res) {
+  // Error ဖြစ်ရင် Vercel Logs မှာ ကြည့်လို့ရအောင် try-catch ခံထားပါတယ်
+  try {
+    const { video, acc = "1" } = req.query;
+
+    if (!video) {
+      return res.status(400).json({ error: "Video parameter missing" });
+    }
+
+    // ၁။ Account နံပါတ်အလိုက် Key များကို ယူခြင်း
+    const accountId = process.env[`R2_ACCOUNT_ID_${acc}`];
+    const accessKeyId = process.env[`R2_ACCESS_KEY_ID_${acc}`];
+    const secretAccessKey = process.env[`R2_SECRET_ACCESS_KEY_${acc}`];
+    const bucketName = process.env[`R2_BUCKET_NAME_${acc}`];
+
+    // Setting မရှိရင် Error ပြမယ် (Crash မဖြစ်စေပါ)
+    if (!accountId || !accessKeyId || !secretAccessKey || !bucketName) {
+      console.error(`Missing settings for Account ${acc}`);
+      return res.status(500).json({ error: `Account ${acc} configuration missing in Vercel` });
+    }
+
+    // ၂။ R2 Client တည်ဆောက်ခြင်း
+    const r2 = new S3Client({
+      region: "auto",
+      endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId, secretAccessKey },
     });
 
-    const bucketParams = {
-      Bucket: bucketName,
-      Key: video, // video နာမည် (Folder ပါရင်လည်း ရတယ်)
-    };
-
-    // ==========================================
-    // ၄။ Smart Metadata Check (APK File Size ပြဿနာဖြေရှင်းချက်)
-    // ==========================================
-    if (req.method === "HEAD") {
+    // ၃။ APK က Size လှမ်းစစ်လျှင် (HEAD Request)
+    // ဒါပါမှ APK မှာ Size ပေါ်မှာပါ
+    if (req.method === 'HEAD') {
       try {
-        // R2 ကို ဖိုင်ဆိုဒ်လှမ်းမေးခြင်း
-        const headCmd = new HeadObjectCommand(bucketParams);
-        const metadata = await r2.send(headCmd);
+        const command = new HeadObjectCommand({ Bucket: bucketName, Key: video });
+        const metadata = await r2.send(command);
 
-        // APK ကို File Size နှင့် Type ပြန်ပြောခြင်း
+        // Size နှင့် Type ကို APK ထံ ပြန်ပြောခြင်း
         res.setHeader("Content-Length", metadata.ContentLength);
         res.setHeader("Content-Type", metadata.ContentType || "video/mp4");
-        return res.status(200).end(); // Redirect မလုပ်ဘဲ ဒီမှာတင် အဆုံးသတ်
+        res.setHeader("Content-Disposition", `attachment; filename="${video}"`);
+        return res.status(200).end();
       } catch (error) {
-        // ဖိုင်မရှိရင် 404 ပြ
+        // ဖိုင်မရှိရင် 404 ပြမယ်
         return res.status(404).end();
       }
     }
 
-    // ==========================================
-    // ၅။ Download Logic (GET Request)
-    // ==========================================
+    // ၄။ Download ဆွဲလျှင် (GET Request) -> Link ထုတ်ပေးမည်
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: video,
+      ResponseContentDisposition: `attachment; filename="${video}"`, // တန်း Download ကျစေမည့်ကုဒ်
+    });
 
-    // Force Download ဖြစ်အောင် Header ထည့်ခြင်း
-    bucketParams.ResponseContentDisposition = `attachment; filename="${video.split('/').pop()}"`;
+    const signedUrl = await getSignedUrl(r2, command, { expiresIn: 10800 }); // 3 နာရီ
 
-    const command = new GetObjectCommand(bucketParams);
-
-    // Signed URL ထုတ်ခြင်း (၃ နာရီ)
-    const signedUrl = await getSignedUrl(r2, command, { expiresIn: 10800 });
-
-    // User ကို R2 Link ဆီသို့ လမ်းကြောင်းလွှဲပေးခြင်း (Redirect)
-    res.redirect(302, signedUrl);
+    // Link ကို Redirect လုပ်မည်
+    return res.redirect(302, signedUrl);
 
   } catch (error) {
-    console.error(error);
-    res.status(500).send("Internal Server Error");
+    console.error("Server Error:", error);
+    return res.status(500).json({ error: "Internal Server Error", details: error.message });
   }
 }
