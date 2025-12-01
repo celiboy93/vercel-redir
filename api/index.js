@@ -2,7 +2,6 @@
 import { S3Client, HeadObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-// R2 Setup
 const r2 = new S3Client({
   region: "auto",
   endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
@@ -12,53 +11,50 @@ const r2 = new S3Client({
   },
 });
 
-const BUCKET_NAME = process.env.R2_BUCKET_NAME; // Environment Variable ထဲမှာ ထည့်ဖို့မမေ့ပါနဲ့
-
 export default async function handler(req, res) {
-  // Query ကနေ video နာမည်ယူမယ် (ဥပမာ: ?video=batman)
-  let { video } = req.query;
+  // URL နောက်က နာမည်ကို ယူမယ် (ဥပမာ: /batman -> batman)
+  // .mp4 ပါရင် ဖယ်ထုတ်မယ်
+  const urlParts = req.url.split('/');
+  let videoName = urlParts[urlParts.length - 1];
+  videoName = videoName.replace('.mp4', '');
 
-  if (!video) {
-    return res.status(400).send("Video name missing");
+  if (!videoName) {
+    return res.status(400).send("Video name required");
   }
 
-  // .mp4 မပါရင် ထည့်ပေးမယ်
-  if (!video.endsWith(".mp4")) {
-    video += ".mp4";
-  }
+  // R2 ပေါ်က ဖိုင်နာမည်အမှန် (နောက်က .mp4 ပြန်တပ်)
+  const objectKey = `${videoName}.mp4`;
+  const bucketName = "lugyicar"; // ဒီနေရာမှာ Bucket နာမည် အမှန်ထည့်ပါ
 
   try {
-    // ၁။ APK က File Size လှမ်းစစ်တဲ့အဆင့် (HEAD Request)
-    if (req.method === "HEAD") {
+    // ၁။ HEAD Request (APK က Size လှမ်းစစ်တဲ့အချိန်)
+    if (req.method === 'HEAD') {
       const command = new HeadObjectCommand({
-        Bucket: BUCKET_NAME,
-        Key: video,
+        Bucket: bucketName,
+        Key: objectKey,
       });
-
-      // R2 ကို Metadata လှမ်းမေးမယ်
       const metadata = await r2.send(command);
 
-      // APK ကို File Size နဲ့ Type ပြန်ပြောမယ် (Download မလုပ်ဘူး)
-      res.setHeader("Content-Length", metadata.ContentLength);
-      res.setHeader("Content-Type", metadata.ContentType || "video/mp4");
-      res.setHeader("Content-Disposition", `attachment; filename="${video}"`);
+      // Size နဲ့ Type ကို APK ဆီ လှမ်းပြောမယ် (Bandwidth မကုန်ပါ)
+      res.setHeader('Content-Length', metadata.ContentLength);
+      res.setHeader('Content-Type', metadata.ContentType || 'video/mp4');
+      res.setHeader('Accept-Ranges', 'bytes');
       return res.status(200).end();
     }
 
-    // ၂။ တကယ် Download ဆွဲတဲ့အဆင့် (GET Request)
+    // ၂။ GET Request (တကယ် Download ဆွဲတဲ့အချိန်)
     const command = new GetObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: video,
+      Bucket: bucketName,
+      Key: objectKey,
     });
 
-    // Presigned URL (အချိန်ပိုင်း Link) ထုတ်မယ် - ၃ နာရီ (10800 စက္ကန့်)
-    const signedUrl = await getSignedUrl(r2, command, { expiresIn: 10800 });
+    // Signed URL ထုတ်ပြီး Redirect လုပ်မယ်
+    const signedUrl = await getSignedUrl(r2, command, { expiresIn: 3600 });
 
-    // User ကို အဲဒီ Link ဆီ Redirect လုပ်ပေးမယ်
     return res.redirect(307, signedUrl);
 
   } catch (error) {
     console.error(error);
-    return res.status(404).send("Video Not Found or Error");
+    return res.status(404).send("Video not found");
   }
 }
